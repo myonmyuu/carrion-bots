@@ -306,7 +306,7 @@ function Fumaki:readmessage(data)
 							self:request(carrion.Api.characters.byid(tostring(id))):getbodytable()
 								or {}
 						).name
-					res = ("%s %s,"):format(res, ("@[%s]"):format())
+					res = ("%s %s,"):format(res, ("@[%s]"):format(name))
 				end
 			end
 			self:sendmessage(res:gsub(",([^,]*)$", ".%1"), data.sender, data.room_id, data.tab_id)
