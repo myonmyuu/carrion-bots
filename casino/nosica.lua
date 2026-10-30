@@ -134,6 +134,8 @@ function Nosica:postlogin()
 			type		= INTERNAL_CMD_VAL;
 		}
 	end)
+
+	self:subtodms()
 end
 
 ---@param id Carrion.CharID
@@ -243,7 +245,7 @@ do --- sse
 	---@param message string
 	---@param ev sse.EventData.dm_message
 	function Nosica:dm(message, ev)
-		self.log:infoF("got dm; '%s' from %s (%i)", message, ev.from, ev.from_id)
+		self:senddm("mirror: "..message, nil, ev.from, ev.from_id)
 	end
 
 	---@param data sse.EventData.user_joined_room

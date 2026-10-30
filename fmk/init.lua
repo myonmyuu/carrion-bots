@@ -5,7 +5,7 @@ local fs		= require "lib.fs"
 
 local botlog = Logger:spec("fmk startup")
 
-local roomname			= "chan-fuck-marry-kill@conference.carrion.chat"
+local fmkroomname		= "chan-fuck-marry-kill@conference.carrion.chat"
 local character_addr	= "https://carrion.chat/character/"
 local botname			= "Fumaki"
 local fmktabname		= "FMK"
@@ -29,7 +29,7 @@ local rollpatterns = {
 local statpattern = "^.-[sS]+.-[tT]+.-[aA]+.-[tT]+.-[sS]+.-"
 
 local responsepattern = "^.-([fFmMkKpP]).-,.-([fFmMkKpP]).-,.-([fFmMkKpP]).-"
-local bracketedresponsepattern = "^.-%(.-([fFmMkKpP]).-[ %,].-([fFmMkKpP]).-[ %,].-([fFmMkKpP]).-%).-"
+local bracketedresponsepattern = "%(.-([fFmMkKpP]).-[ %,]-.-([fFmMkKpP]).-[ %,]-.-([fFmMkKpP]).-%)"
 local catchallresponsepattern = "^.-([fFmMkKpP]).-([fFmMkKpP]).-([fFmMkKpP]).-"
 local passpattern = "^.-[pP]+[aA]+[sS]+.-"
 local globalpattern = "^.-[gG]+.-[lL]+.-[oO]+.-[bB]+.-[aA]+.-[lL]+.-"
@@ -99,15 +99,17 @@ function Fumaki:postlogin()
 		carrion.Api.presence.subscribe,
 		carrion:makehttpcontent {
 			rooms = {
-				roomname,
+				fmkroomname,
 			};
 		}
 	)
+
+	self:subtodms()
 end
 
 function Fumaki:getfmktab()
 	if not self.tab then
-		local tabsres = self:request(carrion.Api.channels.gettabs(roomname)):getbodytable()
+		local tabsres = self:request(carrion.Api.channels.gettabs(fmkroomname)):getbodytable()
 		if not tabsres then
 			self.log:warning("error finding fmk tab")
 			return "general"
@@ -153,16 +155,173 @@ function Fumaki:shutdown()
 	self:request(carrion.Api.presence.disconnect)
 end
 
-function Fumaki:sendmessage(body, respondee, tab)
-	local reqcontent = {
-		body	= body;
-		tab_id	= tab or self:getfmktab();
-	}
-	self.log:infoF("sending message '%s'", body)
-	self:request(carrion.Api.channels.send(roomname), carrion:makehttpcontent(reqcontent))
+---@param body string
+---@param respondee channeluser?
+---@param room string?
+---@param tab string?
+function Fumaki:sendmessage(body, respondee, room, tab)
+	self.log:infoF("sending message '%s' to %s:%s", body, tostring(room), tostring(tab))
+	self.log:infoF("%s, %s, %s, %s", helpers.topstring(body), helpers.topstring(respondee), helpers.topstring(room), helpers.topstring(tab))
+	room = room or fmkroomname
+
+	if string.match(room, "^dm.-") then
+		if not respondee then
+			self.log:warningF("unable to send dm '%s', respondee was nil", body)
+			return
+		end
+		self:senddm(body, nil, respondee.name, respondee.id, tab)
+	else
+		local reqcontent = {
+			body	= body;
+			tab_id	= tab or self:getfmktab();
+		}
+		self:request(carrion.Api.channels.send(room), carrion:makehttpcontent(reqcontent))
+	end
 end
 
----@param data sse.EventData.channel_message
+---@param data CarrionMessage
+function Fumaki:readmessage(data)
+	local message = data.message
+
+	--- Old filtering that's no longer needed because she only receives pinging messages anyway
+	-- self.log:debug("got a message...")
+	-- local pattern = ("^?%s%s%s"):format(bropen, self.name, brclose)
+	-- if not message:match(pattern) then
+	-- 	self.log:debug("we do not care")
+	-- 	--- we dont care
+	-- 	return
+	-- end
+
+	self.log:infoF("received pinging message: %s from %s", message, data.sender.name)
+
+	if data.tab_id == self:getfmktab() and self.spinner then
+		self:tryextractresponse(data)
+		return
+	end
+
+	if message:match(excludepattern) then
+		if table.getIndex(self.save.exceptions, data.sender.id) ~= 0 then
+			self:sendmessage("You're already excluded from rolls.", data.sender, data.room_id, data.tab_id)
+			return
+		end
+		table.insert(self.save.exceptions, data.sender.id)
+		self:sendmessage("Very well, you wont appear in rolls from now on.", data.sender, data.room_id, data.tab_id)
+		return
+	elseif message:match(includepattern) then
+		local succ = table.removeall(self.save.exceptions, data.sender.id)
+		self:sendmessage(succ and "Alright, you're back in!" or "You're not even excluded...", data.sender, data.room_id, data.tab_id)
+		return
+	end
+
+	do
+		local function _getaltlist(id)
+			if not self.save.alts[id] then
+				self.save.alts[id] = {}
+			end
+			return self.save.alts[id]
+		end
+		local reg_res = message:match(registerpattern)
+		local unreg_res = message:match(unregisterpattern)
+		if reg_res or unreg_res then
+			local is_reg = unreg_res == nil
+			local capt = reg_res or unreg_res
+			local id = tonumber(capt)
+			local name = capt
+
+			local datares;
+			local errs = {}
+			for _, val in pairs({id, name}) do
+				local ok, res = pcall(function ()
+					return self:request(carrion.Api.characters.byident(val)):getbodytable()
+				end)
+				if ok and res then
+					datares = res
+					break
+				else
+					table.insert(errs, {val, res})
+				end
+			end
+
+			if not datares then
+				self:sendmessage("I can't find a user with that Name/ID.", data.sender, data.room_id, data.tab_id)
+				for _, value in pairs(errs) do
+					self.log:debug(("Error in getting user with ident '%s': '%s'"):format(tostring(value[1]), tostring(value[2])))
+				end
+				return
+			end
+
+			local alt_list = _getaltlist(data.sender.id)
+			local rev_list = _getaltlist(datares.id)
+			local res = "failed" ---@type AltRegResult
+			local error = "Nothing…?"
+
+			if is_reg then
+				if alt_list[datares.id] == nil then
+					alt_list[datares.id] = false
+					rev_list[data.sender.id] = false
+					res = "registered"
+				elseif alt_list[datares.id] then
+					error = "Character is already a confirmed alt."
+					res = "failed"
+				elseif rev_list[data.sender.id] ~= nil then
+					alt_list[datares.id] = true
+					rev_list[data.sender.id] = true
+					res = "confirmed"
+				end
+			else
+				local succ = table.contains(alt_list, datares.id) or table.contains(rev_list, data.sender.id)
+				if not succ then
+					error = "Character is not registered as an alt."
+				end
+				alt_list[datares.id] = nil
+				rev_list[data.sender.id] = nil
+				res = succ and "removed" or "failed"
+			end
+
+			if res == "registered" then
+				self:sendmessage(("Alright, %s is penciled in as your alt. Run the command with your Name/ID on them to confirm."):format(datares.name), data.sender, data.room_id, data.tab_id)
+				return
+			elseif res =="confirmed" then
+				self:sendmessage(("Alright, %s is confirmed in as your alt, and won't appear in your rolls (and vice versa)."):format(datares.name), data.sender, data.room_id, data.tab_id)
+				return
+			elseif res == "removed" then
+				self:sendmessage(("Alright, %s is removed as your alt."):format(datares.name), data.sender, data.room_id, data.tab_id)
+				return
+			elseif res =="failed" then
+				self:sendmessage(("Something didn't work here: %s"):format(error), data.sender, data.room_id, data.tab_id)
+				return
+			end
+		end
+	end
+
+	if data.tab_id == self:getfmktab() then
+		for _, pat in ipairs(rollpatterns) do
+			if message:match(pat) then
+				self:dofmk(data)
+				return
+			end
+		end
+	end
+
+	if message:match(statpattern) then
+		self.log:debugF("getting stats for %i", data.sender.id)
+		local stats = self.save.scores[data.sender.id]
+		if not stats then
+			self:sendmessage("You haven't been spun yet!", data.sender, data.room_id, data.tab_id)
+			return
+		end
+		local rollres = {}
+		for key, readable in pairs(answers) do
+			table.insert(rollres, ("%s: %s"):format(readable, tostring(stats[key])))
+		end
+		self:sendmessage(("Alright, here; %s.%sRemember not to take things too seriously, it's just a game!"):format(table.concat(rollres, ", "),  nl), data.sender, data.room_id, data.tab_id)
+		return
+	end
+
+	self:nounderstand(data, "No valid command was determinable from your message")
+end
+
+---@param data CarrionMessage
 function Fumaki:dofmk(data)
 	if table.getIndex(self.save.banned, data.sender.id) ~= 0 then
 		self.log:debug("banned user blocked from spinning")
@@ -195,7 +354,7 @@ function Fumaki:dofmk(data)
 		local function noworky()
 			self:sendmessage("Uh, there was some sort of problem. Blame my creator. Next spin is free again.")
 		end
-		local users_res = self:request(carrion.Api.room.getusers(roomname))
+		local users_res = self:request(carrion.Api.room.getusers(fmkroomname))
 		local users_t = users_res:getbodytable()
 		if not users_res then
 			self.log:errorF("unable to get room users")
@@ -290,7 +449,7 @@ function Fumaki:dofmk(data)
 	-- math.random(1, #user)
 end
 
----@param data sse.EventData.channel_message
+---@param data CarrionMessage
 function Fumaki:tryextractresponse(data)
 	self.log:debug("attempting response extraction...")
 	if self.spinner.id ~= data.sender.id then
@@ -298,7 +457,7 @@ function Fumaki:tryextractresponse(data)
 		return
 	end
 	local selfname = ("?%s%s%s"):format(bropen, self.name, brclose)
-	local message = data.body:sub(selfname:len() - 1)
+	local message = data.message:sub(selfname:len() - 1)
 	message = message:gsub("<[^>]->", "")
 
 	local choices = {}	---@type table<string, integer>
@@ -401,158 +560,26 @@ local probtexts = {
 	"I'm sorry, but I cannot assist with that request.",
 	"You should spam @[Moiré] for them to add that command in frfr.",
 	"Done! Yeah I've totally done your command. No you can't see the result because... You just can't, ok!",
+	"As a carrion bot, I'm unfortunately unable to fulfill your request."
 }
----@param data sse.EventData.channel_message
+---@param data CarrionMessage
 ---@param reason string?
 function Fumaki:nounderstand(data, reason)
 	local response = probtexts[love.math.random(1, #probtexts)]
 	if reason then
 		response = ("%s%s<sub>*{color:gray}%s.{/color}*</sub>"):format(response, nl, reason)
 	end
-	self:sendmessage(response, data.sender, data.tab_id)
+	self:sendmessage(response, data.sender, data.room_id, data.tab_id)
 end
 
 do --- sse
 	---@param data sse.EventData.channel_message
 	function Fumaki:channel_message(data)
-		local message = data.body
+		self:readmessage(carrion:unifychatmessage(data))
+	end
 
-		--- Old filtering that's no longer needed because she only receives pinging messages anyway
-		-- self.log:debug("got a message...")
-		-- local pattern = ("^?%s%s%s"):format(bropen, self.name, brclose)
-		-- if not message:match(pattern) then
-		-- 	self.log:debug("we do not care")
-		-- 	--- we dont care
-		-- 	return
-		-- end
-
-		self.log:infoF("received pinging message '%s'", message)
-
-		if data.tab_id == self:getfmktab() and self.spinner then
-			self:tryextractresponse(data)
-			return
-		end
-
-		if message:match(excludepattern) then
-			if table.getIndex(self.save.exceptions, data.sender.id) ~= 0 then
-				self:sendmessage("You're already excluded from rolls.", data.sender, data.tab_id)
-				return
-			end
-			table.insert(self.save.exceptions, data.sender.id)
-			self:sendmessage("Very well, you wont appear in rolls from now on.", data.sender, data.tab_id)
-			return
-		elseif message:match(includepattern) then
-			local succ = table.removeall(self.save.exceptions, data.sender.id)
-			self:sendmessage(succ and "Alright, you're back in!" or "You're not even excluded...", data.sender, data.tab_id)
-			return
-		end
-
-		do
-			local function _getaltlist(id)
-				if not self.save.alts[id] then
-					self.save.alts[id] = {}
-				end
-				return self.save.alts[id]
-			end
-			local reg_res = message:match(registerpattern)
-			local unreg_res = message:match(unregisterpattern)
-			if reg_res or unreg_res then
-				local is_reg = unreg_res == nil
-				local capt = reg_res or unreg_res
-				local id = tonumber(capt)
-				local name = capt
-
-				local datares;
-				local errs = {}
-				for _, val in pairs({id, name}) do
-					local ok, res = pcall(function ()
-						return self:request(carrion.Api.characters.byident(val)):getbodytable()
-					end)
-					if ok and res then
-						datares = res
-						break
-					else
-						table.insert(errs, {val, res})
-					end
-				end
-
-				if not datares then
-					self:sendmessage("I can't find a user with that Name/ID.", data.sender, data.tab_id)
-					for _, value in pairs(errs) do
-						self.log:debug(("Error in getting user with ident '%s': '%s'"):format(tostring(value[1]), tostring(value[2])))
-					end
-					return
-				end
-
-				local alt_list = _getaltlist(data.sender.id)
-				local rev_list = _getaltlist(datares.id)
-				local res = "failed" ---@type AltRegResult
-				local error = "Nothing…?"
-
-				if is_reg then
-					if alt_list[datares.id] == nil then
-						alt_list[datares.id] = false
-						rev_list[data.sender.id] = false
-						res = "registered"
-					elseif alt_list[datares.id] then
-						error = "Character is already a confirmed alt."
-						res = "failed"
-					elseif rev_list[data.sender.id] ~= nil then
-						alt_list[datares.id] = true
-						rev_list[data.sender.id] = true
-						res = "confirmed"
-					end
-				else
-					local succ = table.contains(alt_list, datares.id) or table.contains(rev_list, data.sender.id)
-					if not succ then
-						error = "Character is not registered as an alt."
-					end
-					alt_list[datares.id] = nil
-					rev_list[data.sender.id] = nil
-					res = succ and "removed" or "failed"
-				end
-
-				if res == "registered" then
-					self:sendmessage(("Alright, %s is penciled in as your alt. Run the command with your Name/ID on them to confirm."):format(datares.name), data.sender, data.tab_id)
-					return
-				elseif res =="confirmed" then
-					self:sendmessage(("Alright, %s is confirmed in as your alt, and won't appear in your rolls (and vice versa)."):format(datares.name), data.sender, data.tab_id)
-					return
-				elseif res == "removed" then
-					self:sendmessage(("Alright, %s is removed as your alt."):format(datares.name), data.sender, data.tab_id)
-					return
-				elseif res =="failed" then
-					self:sendmessage(("Something didn't work here: %s"):format(error), data.sender, data.tab_id)
-					return
-				end
-			end
-		end
-
-		if data.tab_id == self:getfmktab() then
-			for _, pat in ipairs(rollpatterns) do
-				if message:match(pat) then
-					self:dofmk(data)
-					return
-				end
-			end
-		end
-
-		if message:match(statpattern) then
-			self.log:debugF("getting stats for %i", data.sender.id)
-			local stats = self.save.scores[data.sender.id]
-			if not stats then
-				self:sendmessage("You haven't been spun yet!", data.sender, data.tab_id)
-				return
-			end
-			local rollres = {}
-			for key, readable in pairs(answers) do
-				table.insert(rollres, ("%s: %s"):format(readable, tostring(stats[key])))
-			end
-			self:sendmessage(("Alright, here; %s.%sRemember not to take things too seriously, it's just a game!"):format(table.concat(rollres, ", "),  nl), data.sender, data.tab_id)
-			return
-		end
-
-		self:nounderstand(data, "No valid command was determinable from your message")
+	function Fumaki:dm(message, ev)
+		self:readmessage(carrion:unifychatmessage(ev, message))
 	end
 end
 
