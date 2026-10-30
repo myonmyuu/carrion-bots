@@ -39,6 +39,7 @@ local includepattern = "^.-includeme.-"
 
 local registerpattern = "^.-regalt[ %,]+(.+)"
 local unregisterpattern = "^.-unregalt[ %,]+(.+)"
+local listregpattern = "[ls][ih][so][tw]alts"
 local nl = "</br>"
 
 local beatspersave = 5
@@ -291,6 +292,20 @@ function Fumaki:readmessage(data)
 				self:sendmessage(("Something didn't work here: %s"):format(error), data.sender, data.room_id, data.tab_id)
 				return
 			end
+		elseif message:match(listregpattern) then
+			local alts = _getaltlist(data.sender.id)
+			if next(alts) == nil then
+				self:sendmessage("You don't have any registered alts.", data.sender, data.room_id, data.tab_id)
+				return
+			end
+			local res = "Here's your registered alts; "
+			for id, confirmed in pairs(alts) do
+				if confirmed then
+					res = ("%s %s,"):format(res, ("@[%s]"):format(carrion.UserIDMapR[id]))
+				end
+			end
+			self:sendmessage(res:gsub(",([^,]*)$", ".%1"), data.sender, data.room_id, data.tab_id)
+			return
 		end
 	end
 
@@ -304,17 +319,29 @@ function Fumaki:readmessage(data)
 	end
 
 	if message:match(statpattern) then
-		self.log:debugF("getting stats for %i", data.sender.id)
-		local stats = self.save.scores[data.sender.id]
+		local fumakistats = message:lower():match("].+fumaki") ~= nil
+		local statid = fumakistats and self.id or data.sender.id
+		self.log:debugF("getting stats for %i", statid)
+		local stats = self.save.scores[statid]
 		if not stats then
-			self:sendmessage("You haven't been spun yet!", data.sender, data.room_id, data.tab_id)
+			self:sendmessage(
+				("%s haven't been spun yet!"):format(fumakistats and "I" or "You"),
+				data.sender, data.room_id, data.tab_id
+			)
 			return
 		end
 		local rollres = {}
 		for key, readable in pairs(answers) do
 			table.insert(rollres, ("%s: %s"):format(readable, tostring(stats[key])))
 		end
-		self:sendmessage(("Alright, here; %s.%sRemember not to take things too seriously, it's just a game!"):format(table.concat(rollres, ", "),  nl), data.sender, data.room_id, data.tab_id)
+		self:sendmessage((
+			"%s %s.%s%s"
+		):format(
+			fumakistats and "Fine, fine..." or "Alright, here;",
+			table.concat(rollres, ", "),
+			nl,
+			fumakistats and "Feel free to laugh at me, or whatever." or "Remember not to take things too seriously, it's just a game!"
+		), data.sender, data.room_id, data.tab_id)
 		return
 	end
 
