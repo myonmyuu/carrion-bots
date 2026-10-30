@@ -301,7 +301,12 @@ function Fumaki:readmessage(data)
 			local res = "Here's your registered alts; "
 			for id, confirmed in pairs(alts) do
 				if confirmed then
-					res = ("%s %s,"):format(res, ("@[%s]"):format(carrion.UserIDMapR[id]))
+					local name = carrion.UserIDMapR[id]
+						or (
+							self:request(carrion.Api.characters.byid(tostring(id))):getbodytable()
+								or {}
+						).name
+					res = ("%s %s,"):format(res, ("@[%s]"):format())
 				end
 			end
 			self:sendmessage(res:gsub(",([^,]*)$", ".%1"), data.sender, data.room_id, data.tab_id)
