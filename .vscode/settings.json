@@ -12,6 +12,7 @@
 		"inject-field"
 	],
 	"Lua.diagnostics.globals": [
-		"GetToken"
+		"GetToken",
+		"BasePath"
 	]
 }

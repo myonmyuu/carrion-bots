@@ -1,0 +1,52 @@
+.outer {
+	min-height: 150px;
+	min-width: 400px;
+	background: #33333355;
+	border-radius: 7px;
+	padding: 5px 10px;
+}
+
+.hbox {
+	display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.slotbox {
+	--item-bg: #555555a5;
+	--item-size: 40px;
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	/* grid-template-rows: repeat(3, 1fr); */
+	width: 250px;
+    aspect-ratio: 1 / 1;
+    gap: 3px;
+    margin-inline: auto;
+}
+
+
+.slotitem {
+	background: var(--item-bg);
+	border-radius: 10px;
+	display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+	aspect-ratio: 1 / 1;
+	border: grey outset 1px;
+}
+
+.win {
+	--item-bg: #5ba753a5;
+}
+
+.inactive {
+	--item-bg: #1c1717a5;
+}
+
+.sloticon {
+	object-fit: contain;
+	width: 90%;
+	height: 90%;
+	filter: drop-shadow(4px 4px 4px rgba(0, 0, 0, 0.7));
+}
